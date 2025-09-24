@@ -422,7 +422,65 @@ if not fair_df.empty:
     st.dataframe(fair_df, use_container_width=True)
 else:
     st.write("Fairness table not available.")
+st.header("📝 Auto-Generated Commentary")
 
+# Drift comments
+nt_drift, tech_drift = drift_comments(
+    numeric_drift_df.fillna(0), categorical_drift_df.fillna(0)
+)
+
+# Fairness comments
+nt_fair, tech_fair = fairness_comments(fair_df if not fair_df.empty else pd.DataFrame())
+
+nt_block = (
+    "**For non-technical readers**\n\n" +
+    textwrap.dedent(f"""
+    **Data Drift:**\n
+    {nt_drift}
+
+    **Fairness:**\n
+    {nt_fair}
+    """)
+)
+
+tech_block = (
+    "**For technical readers**\n\n" +
+    textwrap.dedent(f"""
+    **Drift metrics:**\n
+    {tech_drift}
+
+    **Fairness metrics:**\n
+    {tech_fair}
+    """)
+)
+
+st.markdown(nt_block)
+with st.expander("Show technical details"):
+    st.markdown(tech_block)
+
+# =============================
+# Sample schema & how-to
+# =============================
+
+st.header("📦 Sample data & schema")
+
+st.markdown(
+    textwrap.dedent(
+        f"""
+        **Expected columns (recommended)**
+
+        - Feature columns: any name, numeric or categorical.
+        - **{pred_col}** *(optional for drift, required for fairness)*: binary predictions (e.g., 0/1).
+        - **{label_col}** *(optional for drift, required for fairness)*: true binary labels (0/1).
+        - **{group_col}** *(optional for drift, required for fairness)*: sensitive attribute (e.g., gender, region).
+
+        **Notes**
+        - PSI thresholds (rule of thumb): < {psi_warn:.2f} small, {psi_warn:.2f}–{psi_alert:.2f} moderate, ≥ {psi_alert:.2f} high.
+        - Fairness flags: DI < {di_flag:.2f}, |DP diff| > {dp_flag:.2f}, |EO diff| > {eopp_flag:.2f}, EOds > {eodds_flag:.2f}.
+        - Categorical drift flags: TVD > {tvd_flag:.2f}, JS > {js_flag:.2f}.
+        """
+    )
+)
 # =============================
 # 🧠 Explainability (Global & Local)
 # =============================
