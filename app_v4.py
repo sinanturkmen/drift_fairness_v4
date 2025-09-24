@@ -12,7 +12,7 @@ import pandas as pd
 try:
     from scipy import stats
 except ImportError:
-stats = None
+    stats = None
 import streamlit as st
 
 
