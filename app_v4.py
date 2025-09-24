@@ -2,14 +2,14 @@ import io
 import json
 import textwrap
 import warnings
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 import streamlit as st
 
-# NEW: explainability deps
+# Explainability deps
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance, PartialDependenceDisplay
@@ -22,22 +22,14 @@ warnings.filterwarnings("ignore")
 # =============================
 
 def psi(expected: np.ndarray, actual: np.ndarray, buckets: int = 10) -> float:
-    """Population Stability Index for numeric arrays.
-    Bins based on expected (baseline) distribution.
-    """
+    """Population Stability Index for numeric arrays (bins from baseline)."""
     expected = expected[~np.isnan(expected)]
     actual = actual[~np.isnan(actual)]
     if expected.size == 0 or actual.size == 0:
         return np.nan
-    # Protect against constant vectors
-    if np.all(expected == expected[0]):
-        # Fall back to quantiles from actual to avoid 0-width bins
-        quantiles = np.linspace(0, 1, buckets + 1)
-        cuts = np.unique(np.quantile(actual, quantiles))
-    else:
-        quantiles = np.linspace(0, 1, buckets + 1)
-        cuts = np.unique(np.quantile(expected, quantiles))
-    # Ensure at least 2 bins
+    # Bins
+    quantiles = np.linspace(0, 1, buckets + 1)
+    cuts = np.unique(np.quantile(expected if not np.all(expected == expected[0]) else actual, quantiles))
     if cuts.size < 2:
         return np.nan
     expected_bins = np.clip(np.digitize(expected, cuts, right=False) - 1, 0, len(cuts) - 2)
@@ -49,7 +41,7 @@ def psi(expected: np.ndarray, actual: np.ndarray, buckets: int = 10) -> float:
     exp_props = exp_counts / exp_counts.sum() if exp_counts.sum() else np.zeros_like(exp_counts)
     act_props = act_counts / act_counts.sum() if act_counts.sum() else np.zeros_like(act_counts)
 
-    # Avoid division by zero / log(0)
+    # Stabilize
     exp_props = np.where(exp_props == 0, 1e-6, exp_props)
     act_props = np.where(act_props == 0, 1e-6, act_props)
 
@@ -58,14 +50,12 @@ def psi(expected: np.ndarray, actual: np.ndarray, buckets: int = 10) -> float:
 
 
 def tvd(p: np.ndarray, q: np.ndarray) -> float:
-    """Total Variation Distance between two discrete distributions."""
     p = p / (p.sum() if p.sum() else 1)
     q = q / (q.sum() if q.sum() else 1)
     return 0.5 * float(np.abs(p - q).sum())
 
 
 def ks_stat(x: np.ndarray, y: np.ndarray) -> float:
-    """Two-sample KS statistic (max distance)."""
     x = x[~np.isnan(x)]
     y = y[~np.isnan(y)]
     if x.size == 0 or y.size == 0:
@@ -74,14 +64,15 @@ def ks_stat(x: np.ndarray, y: np.ndarray) -> float:
 
 
 def jensen_shannon(p: np.ndarray, q: np.ndarray) -> float:
-    """Jensen-Shannon distance for discrete distributions (finite, symmetric)."""
     p = p / (p.sum() if p.sum() else 1)
     q = q / (q.sum() if q.sum() else 1)
     m = 0.5 * (p + q)
+
     def _kl(a, b):
         a = np.where(a == 0, 1e-12, a)
         b = np.where(b == 0, 1e-12, b)
         return np.sum(a * np.log(a / b))
+
     js_div = 0.5 * _kl(p, m) + 0.5 * _kl(q, m)
     return float(np.sqrt(js_div))
 
@@ -123,7 +114,7 @@ def group_rates(y_true: pd.Series, y_pred: pd.Series, group: pd.Series, positive
 def fairness_summary(rates: pd.DataFrame, reference_group: str = None) -> pd.DataFrame:
     if rates.empty:
         return rates
-    rates = rates.sort_values("selection_rate", ascending=False).reset_index(drop=True)
+    rates = rates.sort_values("selection_rate", ascending=False).reset_index(index=False)
     ref = reference_group if reference_group in set(rates["group"]) else rates.iloc[0]["group"]
     rates["is_reference"] = rates["group"] == ref
     ref_row = rates[rates["group"] == ref].iloc[0]
@@ -144,14 +135,14 @@ def fairness_summary(rates: pd.DataFrame, reference_group: str = None) -> pd.Dat
 
 def drift_comments(numeric_drift_df: pd.DataFrame, categorical_drift_df: pd.DataFrame) -> Tuple[str, str]:
     """Returns (non_technical, technical) comment blocks for drift."""
-    nontech_msgs = []
-    tech_msgs = []
+    nontech_msgs: List[str] = []
+    tech_msgs: List[str] = []
 
     # Numeric features
     for _, row in numeric_drift_df.iterrows():
-        feat = row["feature"]
-        psi_v = row["psi"]
-        ks_v = row["ks"]
+        feat = row.get("feature")
+        psi_v = row.get("psi")
+        ks_v = row.get("ks")
         flag = None
         if pd.notna(psi_v):
             if psi_v >= 0.25:
@@ -167,9 +158,9 @@ def drift_comments(numeric_drift_df: pd.DataFrame, categorical_drift_df: pd.Data
 
     # Categorical features
     for _, row in categorical_drift_df.iterrows():
-        feat = row["feature"]
-        tvd_v = row["tvd"]
-        js_v = row["js"]
+        feat = row.get("feature")
+        tvd_v = row.get("tvd")
+        js_v = row.get("js")
         if pd.notna(tvd_v) and tvd_v > 0.1:
             nontech_msgs.append(f"{feat}: noticeable change in category mix compared to baseline.")
             tech_msgs.append(f"{feat}: TVD={tvd_v:.3f} (>|0.1|) suggests discrete shift.")
@@ -181,24 +172,21 @@ def drift_comments(numeric_drift_df: pd.DataFrame, categorical_drift_df: pd.Data
     if not tech_msgs:
         tech_msgs.append("No drift metrics exceeded default thresholds.")
 
-    return "
-".join(nontech_msgs), "
-".join(tech_msgs)
+    return "\n".join(nontech_msgs), "\n".join(tech_msgs)
 
 
 def fairness_comments(fair_df: pd.DataFrame) -> Tuple[str, str]:
-    nontech = []
-    tech = []
+    nontech: List[str] = []
+    tech: List[str] = []
     if fair_df.empty:
         return ("Fairness metrics could not be computed (check inputs).", "No fairness stats available.")
 
-    # Flags
     for _, r in fair_df.iterrows():
-        g = r["group"]
-        di = r["di_ratio"]
-        dp = r["dp_diff"]
-        eod = r["eodds"]
-        eopp = r["eodiff_tpr"]
+        g = r.get("group")
+        di = r.get("di_ratio")
+        dp = r.get("dp_diff")
+        eod = r.get("eodds")
+        eopp = r.get("eodiff_tpr")
         concerns = []
         if pd.notna(di) and di < 0.8:
             concerns.append("low selection ratio vs. reference (<0.8)")
@@ -208,28 +196,21 @@ def fairness_comments(fair_df: pd.DataFrame) -> Tuple[str, str]:
             concerns.append("unequal true positive rates (>|0.10|)")
         if pd.notna(eod) and eod > 0.10:
             concerns.append("unequalized odds (>|0.10|)")
-
         if concerns:
             nontech.append(f"Group '{g}': potential fairness risk – " + ", ".join(concerns) + ".")
-
-        # Technical
         tech.append(
             (
-                f"Group {g}: n={int(r['n'])} | sel_rate={r['selection_rate']:.3f} "
-                f"| DI={r['di_ratio'] if not pd.isna(r['di_ratio']) else np.nan:.3f} "
-                f"| DP diff={r['dp_diff'] if not pd.isna(r['dp_diff']) else np.nan:.3f} "
-                f"| TPR={r['tpr'] if not pd.isna(r['tpr']) else np.nan:.3f} "
-                f"| FPR={r['fpr'] if not pd.isna(r['fpr']) else np.nan:.3f} "
-                f"| EOdds={r['eodds'] if not pd.isna(r['eodds']) else np.nan:.3f}"
+                f"Group {g}: n={int(r['n']) if not pd.isna(r.get('n', np.nan)) else 'NA'} | sel_rate={r['selection_rate'] if not pd.isna(r.get('selection_rate', np.nan)) else np.nan:.3f} "
+                f"| DI={r['di_ratio'] if not pd.isna(r.get('di_ratio', np.nan)) else np.nan:.3f} "
+                f"| DP diff={r['dp_diff'] if not pd.isna(r.get('dp_diff', np.nan)) else np.nan:.3f} "
+                f"| TPR={r['tpr'] if not pd.isna(r.get('tpr', np.nan)) else np.nan:.3f} "
+                f"| FPR={r['fpr'] if not pd.isna(r.get('fpr', np.nan)) else np.nan:.3f} "
+                f"| EOdds={r['eodds'] if not pd.isna(r.get('eodds', np.nan)) else np.nan:.3f}"
             )
         )
-
     if not nontech:
         nontech.append("No major fairness concerns based on chosen thresholds. Groups have comparable selection and error rates.")
-
-    return "
-".join(nontech), "
-".join(tech)
+    return "\n".join(nontech), "\n".join(tech)
 
 
 # =============================
@@ -288,7 +269,7 @@ with st.sidebar:
         help="See 'Sample data & schema' in the main panel for details."
     )
 
-# Placeholder for computed frames
+# Placeholders
 numeric_drift_df = pd.DataFrame(columns=["feature", "psi", "ks"]).astype({"feature": str, "psi": float, "ks": float})
 categorical_drift_df = pd.DataFrame(columns=["feature", "tvd", "js"]).astype({"feature": str, "tvd": float, "js": float})
 fair_df = pd.DataFrame()
@@ -305,7 +286,6 @@ if metrics_file is not None:
             categorical_drift_df = pd.DataFrame(mobj.get("categorical_drift", []))
             fair_df = pd.DataFrame(mobj.get("fairness", []))
         else:
-            # If CSV is provided, we try to infer table by column presence
             mtab = pd.read_csv(metrics_file)
             if set(["feature", "psi", "ks"]).issubset(mtab.columns):
                 numeric_drift_df = mtab[["feature", "psi", "ks"]].copy()
@@ -324,12 +304,11 @@ if baseline_csv is not None and current_csv is not None:
         curr = pd.read_csv(current_csv)
         st.success("Datasets loaded.")
 
-        # Find common features
+        # Common features (excluding pred/label/group)
         common_cols = list(set(base.columns).intersection(set(curr.columns)))
-        # Remove label/pred/group from feature list
         feature_cols = [c for c in common_cols if c not in {pred_col, label_col, group_col}]
 
-        # Persist for explainability
+        # Store for explainability
         st.session_state["_feature_cols"] = feature_cols
         st.session_state["_X"] = curr[feature_cols].copy()
         st.session_state["_yhat"] = curr[pred_col] if pred_col in curr.columns else None
@@ -337,7 +316,7 @@ if baseline_csv is not None and current_csv is not None:
 
         # Split into numeric/categorical
         num_feats = [c for c in feature_cols if pd.api.types.is_numeric_dtype(base[c]) and pd.api.types.is_numeric_dtype(curr[c])]
-        cat_feats = [c for c in feature_cols if not (c in num_feats)]
+        cat_feats = [c for c in feature_cols if c not in num_feats]
 
         # Numeric drift
         n_rows = []
@@ -352,7 +331,6 @@ if baseline_csv is not None and current_csv is not None:
         for f in sorted(cat_feats):
             p_counts, p_idx = categorical_dist(base[f].astype(str))
             q_counts, q_idx = categorical_dist(curr[f].astype(str))
-            # Align categories
             cats = sorted(set(p_idx) | set(q_idx))
             p_aligned = np.array([p_counts[p_idx.index(c)] if c in p_idx else 0 for c in cats], dtype=float)
             q_aligned = np.array([q_counts[q_idx.index(c)] if c in q_idx else 0 for c in cats], dtype=float)
@@ -428,8 +406,7 @@ if "_X" in st.session_state and st.session_state.get("_X") is not None and st.se
 
     st.markdown("#### Global importance (permutation, surrogate)")
     r = permutation_importance(surrogate, X, yhat, n_repeats=10, random_state=0)
-    imp_df = pd.DataFrame({"feature": feature_cols, "importance": r.importances_mean}) \
-                .sort_values("importance", ascending=False)
+    imp_df = pd.DataFrame({"feature": feature_cols, "importance": r.importances_mean}).sort_values("importance", ascending=False)
     st.dataframe(imp_df, use_container_width=True)
 
     st.markdown("#### Partial Dependence + ICE")
@@ -442,15 +419,15 @@ if "_X" in st.session_state and st.session_state.get("_X") is not None and st.se
     st.markdown("#### Local explanation (SHAP on surrogate)")
     try:
         explainer = shap.TreeExplainer(surrogate)
-        # Sample at most 200 rows to keep things fast
         sample_idx = np.random.choice(len(X), size=min(200, len(X)), replace=False)
         Xs = X.iloc[sample_idx]
         shap_vals = explainer.shap_values(Xs)
-        # Handle binary classification list output
         if isinstance(shap_vals, list):
             shap_arr = shap_vals[1] if len(shap_vals) > 1 else shap_vals[0]
+            base_val = explainer.expected_value[1] if isinstance(explainer.expected_value, list) else explainer.expected_value
         else:
             shap_arr = shap_vals
+            base_val = explainer.expected_value
         st.caption("Mean absolute SHAP values across a 200-row sample (class 1 if binary).")
         mean_abs_shap = pd.DataFrame({
             "feature": X.columns,
@@ -459,12 +436,14 @@ if "_X" in st.session_state and st.session_state.get("_X") is not None and st.se
         st.dataframe(mean_abs_shap, use_container_width=True)
 
         row_idx = st.number_input("Row index for waterfall (from sampled subset)", 0, len(Xs)-1, 0)
-        # Waterfall plot (matplotlib backend)
         try:
-            shap.plots.waterfall(shap.Explanation(values=shap_arr[row_idx], base_values=explainer.expected_value[1] if isinstance(explainer.expected_value, list) else explainer.expected_value, data=Xs.iloc[row_idx].values, feature_names=list(X.columns)), show=False)
+            shap.plots.waterfall(
+                shap.Explanation(values=shap_arr[row_idx], base_values=base_val, data=Xs.iloc[row_idx].values, feature_names=list(X.columns)),
+                show=False
+            )
             st.pyplot(plt.gcf())
         except Exception:
-            st.info("Waterfall rendering not supported in this environment; showing raw contributions.")
+            st.info("Waterfall rendering not supported here; showing raw contributions.")
             st.write(pd.Series(shap_arr[row_idx], index=X.columns).sort_values(key=np.abs, ascending=False))
     except Exception as e:
         st.warning(f"SHAP explanation unavailable: {e}")
@@ -477,18 +456,11 @@ else:
 
 st.header("📝 Auto-Generated Commentary")
 
-# Drift comments
-nt_drift, tech_drift = drift_comments(
-    numeric_drift_df.fillna(0), categorical_drift_df.fillna(0)
-)
-
-# Fairness comments
+nt_drift, tech_drift = drift_comments(numeric_drift_df.fillna(0), categorical_drift_df.fillna(0))
 nt_fair, tech_fair = fairness_comments(fair_df if not fair_df.empty else pd.DataFrame())
 
 nt_block = (
-    "**For non-technical readers**
-
-" +
+    "**For non-technical readers**\n\n" +
     textwrap.dedent(f"""
     **Data Drift:**
 
@@ -501,9 +473,7 @@ nt_block = (
 )
 
 tech_block = (
-    "**For technical readers**
-
-" +
+    "**For technical readers**\n\n" +
     textwrap.dedent(f"""
     **Drift metrics:**
 
@@ -544,7 +514,7 @@ st.markdown(
     )
 )
 
-# Provide minimal synthetic examples to download
+# Synthetic samples to download
 sample_baseline = pd.DataFrame({
     "age": np.random.normal(40, 10, 500).round(0),
     "income": np.random.lognormal(mean=10.5, sigma=0.5, size=500).round(0),
@@ -555,10 +525,8 @@ sample_baseline = pd.DataFrame({
 sample_baseline["prediction"] = (sample_baseline["age"] > 35).astype(int)
 
 sample_current = sample_baseline.copy()
-# Introduce drift in current
 sample_current["age"] = np.random.normal(45, 12, 500).round(0)
 sample_current["channel"] = np.random.choice(["web", "store", "phone"], size=500, p=[0.4, 0.4, 0.2])
-# Introduce slight fairness shift
 sample_current["prediction"] = ((sample_current["age"] > 42) | (sample_current["channel"] == "store")).astype(int)
 
 colA, colB = st.columns(2)
