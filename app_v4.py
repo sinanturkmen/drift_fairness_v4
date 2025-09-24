@@ -88,14 +88,14 @@ def jensen_shannon(p: np.ndarray, q: np.ndarray) -> float:
     m = 0.5 * (p + q)
 
 
-def _kl(a, b):
-    a = np.where(a == 0, 1e-12, a)
-    b = np.where(b == 0, 1e-12, b)
-    return np.sum(a * np.log(a / b))
+    def _kl(a, b):
+        a = np.where(a == 0, 1e-12, a)
+        b = np.where(b == 0, 1e-12, b)
+        return np.sum(a * np.log(a / b))
 
 
-js_div = 0.5 * _kl(p, m) + 0.5 * _kl(q, m)
-return float(np.sqrt(js_div))
+    js_div = 0.5 * _kl(p, m) + 0.5 * _kl(q, m)
+    return float(np.sqrt(js_div))
 
 
 
