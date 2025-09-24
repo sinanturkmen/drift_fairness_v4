@@ -10,7 +10,7 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 try:
-from scipy import stats
+    from scipy import stats
 except ImportError:
 stats = None
 import streamlit as st
