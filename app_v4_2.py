@@ -237,6 +237,9 @@ st.set_page_config(page_title="Model Drift, Fairness & Explainability", layout="
 
 with st.sidebar:
   st.image("https://lh5.googleusercontent.com/proxy/GethJa6lNucREj_yu1CWrKGMPWd5VvUS8ancZ-UdFuWmNpwiYke5FPdK1kFJJsPlb0yYEG8fYstuYyl4uLWqA7rd2AgD", width=150)
+  st.write(
+    "Monalytics"
+)
 st.title("📊 Model Drift, Fairness & Explainability")
 st.write(
     "Upload baseline and current datasets (or a precomputed metrics file). "
