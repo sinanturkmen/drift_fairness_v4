@@ -420,114 +420,121 @@ else:
 # =============================
 # 🧠 Explainability (Global & Local)
 # =============================
-
 st.header("🧠 Explainability")
+
 if "_X" in st.session_state and st.session_state.get("_X") is not None and st.session_state.get("_yhat") is not None:
-    X = st.session_state["_X"]
+    X = st.session_state["_X"].copy()
     feature_cols = st.session_state["_feature_cols"]
     yhat = st.session_state["_yhat"]
 
-    # Drop missing predictions and coerce to ints
+    # Drop rows with missing predictions and coerce to ints
     mask = ~pd.isna(yhat)
-    X_fit = X.loc[mask]
-    y_fit = yhat.loc[mask]
-    y_fit = pd.to_numeric(y_fit, errors="coerce").dropna().astype(int)
-    X_fit = X_fit.loc[y_fit.index]
+    X = X.loc[mask]
+    y = pd.to_numeric(yhat.loc[mask], errors="coerce").dropna().astype(int)
+    X = X.loc[y.index]
 
-    if len(X_fit) >= 2 and len(np.unique(y_fit)) > 1:
+    # Need at least 2 classes
+    if len(X) >= 2 and len(np.unique(y)) > 1:
+        # Split feature types
+        num_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
+        cat_cols = [c for c in X.columns if c not in num_cols]
+
+        # Preprocess: impute + scale numeric, impute + one-hot categorical
+        pre = ColumnTransformer(
+            transformers=[
+                ("num", Pipeline([
+                    ("imputer", SimpleImputer(strategy="median")),
+                    ("scaler", StandardScaler(with_mean=False))  # with_mean=False keeps sparse safety
+                ]), num_cols),
+                ("cat", Pipeline([
+                    ("imputer", SimpleImputer(strategy="most_frequent")),
+                    ("onehot", OneHotEncoder(handle_unknown="ignore"))
+                ]), cat_cols),
+            ],
+            remainder="drop"
+        )
+
+        surrogate = Pipeline([
+            ("pre", pre),
+            ("clf", RandomForestClassifier(n_estimators=200, random_state=0))
+        ])
+
         with st.spinner("Training lightweight surrogate to mimic predictions…"):
-            surrogate = RandomForestClassifier(n_estimators=200, random_state=0)
-            surrogate.fit(X_fit, y_fit)
+            surrogate.fit(X, y)
 
-        st.markdown("#### Global importance (permutation, surrogate)")
-        r = permutation_importance(surrogate, X_fit, y_fit, n_repeats=10, random_state=0)
-        imp_df = (pd.DataFrame({"feature": list(X_fit.columns), "importance": r.importances_mean})
-                    .sort_values("importance", ascending=False))
+        # ---------- Raw-feature permutation importance ----------
+        st.markdown("#### Global importance (raw-feature permutation)")
+        baseline_acc = accuracy_score(y, surrogate.predict(X))
+        drops = []
+        rng = np.random.default_rng(0)
+        for col in X.columns:
+            X_perm = X.copy()
+            # independent permutation of the single column
+            X_perm[col] = rng.permutation(X_perm[col].values)
+            acc = accuracy_score(y, surrogate.predict(X_perm))
+            drops.append((col, baseline_acc - acc))
+        imp_df = pd.DataFrame(drops, columns=["feature", "accuracy_drop"]).sort_values("accuracy_drop", ascending=False)
         st.dataframe(imp_df, use_container_width=True)
 
-        st.markdown("#### Partial Dependence + ICE")
-        if len(feature_cols) > 0:
-            feat = st.selectbox("Feature for PDP/ICE", feature_cols)
+        # ---------- PDP/ICE only for numeric features ----------
+        st.markdown("#### Partial Dependence + ICE (numeric features only)")
+        if len(num_cols) > 0:
+            feat = st.selectbox("Feature for PDP/ICE", num_cols)
             fig, ax = plt.subplots()
-            PartialDependenceDisplay.from_estimator(surrogate, X_fit, [feat], kind="both", ax=ax)
+            # PDP supports pipelines; pass the original (untransformed) feature name
+            PartialDependenceDisplay.from_estimator(surrogate, X, [feat], kind="both", ax=ax)
             st.pyplot(fig)
+        else:
+            st.info("No numeric features available for PDP/ICE.")
 
+        # ---------- Local SHAP on surrogate ----------
         st.markdown("#### Local explanation (SHAP on surrogate)")
         try:
-            explainer = shap.TreeExplainer(surrogate)
-            sample_idx = np.random.choice(len(X_fit), size=min(200, len(X_fit)), replace=False)
-            Xs = X_fit.iloc[sample_idx]
-            shap_vals = explainer.shap_values(Xs)
+            # SHAP works on the fitted pipeline; compute on a small sample
+            sample_idx = np.random.choice(len(X), size=min(200, len(X)), replace=False)
+            Xs = X.iloc[sample_idx]
+
+            # Build a TreeExplainer on the underlying RF (after transform)
+            # We transform Xs to the model's input space:
+            Xs_trans = surrogate.named_steps["pre"].transform(Xs)
+            rf = surrogate.named_steps["clf"]
+
+            explainer = shap.TreeExplainer(rf)
+            shap_vals = explainer.shap_values(Xs_trans)
+
+            # expected_value can be list for binary classifiers
+            base_val = explainer.expected_value[1] if isinstance(explainer.expected_value, list) else explainer.expected_value
             if isinstance(shap_vals, list):
-                shap_arr = shap_vals[1] if len(shap_vals) > 1 else shap_vals[0]
-                base_val = explainer.expected_value[1] if isinstance(explainer.expected_value, list) else explainer.expected_value
+                shap_arr = shap_vals[1]  # class 1 contributions
             else:
                 shap_arr = shap_vals
-                base_val = explainer.expected_value
 
-            st.caption("Mean absolute SHAP values across a 200-row sample (class 1 if binary).")
-            mean_abs_shap = (pd.DataFrame({"feature": Xs.columns, "mean_abs_shap": np.abs(shap_arr).mean(axis=0)})
-                               .sort_values("mean_abs_shap", ascending=False))
-            st.dataframe(mean_abs_shap, use_container_width=True)
+            # We don’t have easy original-feature SHAP after one-hot; show magnitudes overall
+            st.caption("Mean |SHAP| over transformed features (proxy magnitude).")
+            mean_abs_shap = pd.DataFrame({
+                "transformed_feature_index": np.arange(shap_arr.shape[1]),
+                "mean_abs_shap": np.abs(shap_arr).mean(axis=0)
+            }).sort_values("mean_abs_shap", ascending=False)
+            st.dataframe(mean_abs_shap.head(30), use_container_width=True)
 
+            # Waterfall for a single sample (transformed space)
             row_idx = st.number_input("Row index for waterfall (from sampled subset)", 0, len(Xs)-1, 0)
             try:
                 shap.plots.waterfall(
                     shap.Explanation(values=shap_arr[row_idx], base_values=base_val,
-                                     data=Xs.iloc[row_idx].values, feature_names=list(Xs.columns)),
+                                     data=np.asarray(Xs_trans[row_idx]).ravel(), feature_names=[f"x{i}" for i in range(shap_arr.shape[1])]),
                     show=False
                 )
                 st.pyplot(plt.gcf())
             except Exception:
                 st.info("Waterfall rendering not supported here; showing raw contributions.")
-                st.write(pd.Series(shap_arr[row_idx], index=Xs.columns).sort_values(key=np.abs, ascending=False))
+                st.write(pd.Series(shap_arr[row_idx]).sort_values(key=np.abs, ascending=False).head(30))
         except Exception as e:
             st.warning(f"SHAP explanation unavailable: {e}")
     else:
-        st.warning("Explainability skipped: Need predictions for at least two classes after dropping missing values.")
+        st.warning("Explainability skipped: need predictions for at least two classes after dropping missing values.")
 else:
     st.info("Upload baseline & current CSVs with a prediction column to enable explainability.")
-
-# =============================
-# Commentaries
-# =============================
-
-st.header("📝 Auto-Generated Commentary")
-
-nt_drift, tech_drift = drift_comments(numeric_drift_df.fillna(0), categorical_drift_df.fillna(0))
-nt_fair, tech_fair = fairness_comments(fair_df if not fair_df.empty else pd.DataFrame())
-
-nt_block = (
-    "**For non-technical readers**\n\n" +
-    textwrap.dedent(f"""
-    **Data Drift:**
-
-    {nt_drift}
-
-    **Fairness:**
-
-    {nt_fair}
-    """)
-)
-
-
-tech_block = (
-    "**For technical readers**\n\n" +
-    textwrap.dedent(f"""
-    **Drift metrics:**
-
-    {tech_drift}
-
-    **Fairness metrics:**
-
-    {tech_fair}
-    """)
-)
-
-
-st.markdown(nt_block)
-with st.expander("Show technical details"):
-    st.markdown(tech_block)
 
 # =============================
 # Sample schema & how-to
