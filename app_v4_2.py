@@ -497,9 +497,8 @@ st.header("📝 Auto-Generated Commentary")
 nt_drift, tech_drift = drift_comments(numeric_drift_df.fillna(0), categorical_drift_df.fillna(0))
 nt_fair, tech_fair = fairness_comments(fair_df if not fair_df.empty else pd.DataFrame())
 
-nt_block = ("**For non-technical readers**
-
-" +
+nt_block = (
+    "**For non-technical readers**\n\n" +
     textwrap.dedent(f"""
     **Data Drift:**
 
@@ -508,11 +507,12 @@ nt_block = ("**For non-technical readers**
     **Fairness:**
 
     {nt_fair}
-    """))
+    """)
+)
 
-tech_block = ("**For technical readers**
 
-" +
+tech_block = (
+    "**For technical readers**\n\n" +
     textwrap.dedent(f"""
     **Drift metrics:**
 
@@ -521,7 +521,9 @@ tech_block = ("**For technical readers**
     **Fairness metrics:**
 
     {tech_fair}
-    """))
+    """)
+)
+
 
 st.markdown(nt_block)
 with st.expander("Show technical details"):
