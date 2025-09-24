@@ -178,9 +178,8 @@ def drift_comments(numeric_drift_df: pd.DataFrame, categorical_drift_df: pd.Data
     if not tech_msgs:
         tech_msgs.append("No drift metrics exceeded default thresholds.")
 
-    return "
-".join(nontech_msgs), "
-".join(tech_msgs)
+    return "\n".join(nontech_msgs), "\n".join(tech_msgs)
+
 
 
 def fairness_comments(fair_df: pd.DataFrame) -> Tuple[str, str]:
@@ -218,9 +217,8 @@ def fairness_comments(fair_df: pd.DataFrame) -> Tuple[str, str]:
         )
     if not nontech:
         nontech.append("No major fairness concerns based on chosen thresholds. Groups have comparable selection and error rates.")
-    return "
-".join(nontech), "
-".join(tech)
+    return "\n".join(nontech), "\n".join(tech)
+
 
 
 # =============================
