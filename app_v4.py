@@ -1,13 +1,20 @@
+
+
 import io
 import json
 import textwrap
 import warnings
 from typing import List, Tuple
 
+
 import numpy as np
 import pandas as pd
+try:
 from scipy import stats
+except ImportError:
+stats = None
 import streamlit as st
+
 
 # Explainability deps
 import matplotlib.pyplot as plt
@@ -15,71 +22,87 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance, PartialDependenceDisplay
 import shap
 
+
 warnings.filterwarnings("ignore")
+
 
 # =============================
 # Helpers
 # =============================
 
+
 def psi(expected: np.ndarray, actual: np.ndarray, buckets: int = 10) -> float:
-    """Population Stability Index for numeric arrays (bins from baseline)."""
-    expected = expected[~np.isnan(expected)]
-    actual = actual[~np.isnan(actual)]
-    if expected.size == 0 or actual.size == 0:
-        return np.nan
-    # Bins
-    quantiles = np.linspace(0, 1, buckets + 1)
-    cuts = np.unique(np.quantile(expected if not np.all(expected == expected[0]) else actual, quantiles))
-    if cuts.size < 2:
-        return np.nan
-    expected_bins = np.clip(np.digitize(expected, cuts, right=False) - 1, 0, len(cuts) - 2)
-    actual_bins = np.clip(np.digitize(actual, cuts, right=False) - 1, 0, len(cuts) - 2)
+expected = expected[~np.isnan(expected)]
+actual = actual[~np.isnan(actual)]
+if expected.size == 0 or actual.size == 0:
+return np.nan
+quantiles = np.linspace(0, 1, buckets + 1)
+cuts = np.unique(np.quantile(expected if not np.all(expected == expected[0]) else actual, quantiles))
+if cuts.size < 2:
+return np.nan
+expected_bins = np.clip(np.digitize(expected, cuts, right=False) - 1, 0, len(cuts) - 2)
+actual_bins = np.clip(np.digitize(actual, cuts, right=False) - 1, 0, len(cuts) - 2)
 
-    exp_counts = np.bincount(expected_bins, minlength=len(cuts) - 1).astype(float)
-    act_counts = np.bincount(actual_bins, minlength=len(cuts) - 1).astype(float)
 
-    exp_props = exp_counts / exp_counts.sum() if exp_counts.sum() else np.zeros_like(exp_counts)
-    act_props = act_counts / act_counts.sum() if act_counts.sum() else np.zeros_like(act_counts)
+exp_counts = np.bincount(expected_bins, minlength=len(cuts) - 1).astype(float)
+act_counts = np.bincount(actual_bins, minlength=len(cuts) - 1).astype(float)
 
-    # Stabilize
-    exp_props = np.where(exp_props == 0, 1e-6, exp_props)
-    act_props = np.where(act_props == 0, 1e-6, act_props)
 
-    psi_vals = (act_props - exp_props) * np.log(act_props / exp_props)
-    return float(np.sum(psi_vals))
+exp_props = exp_counts / exp_counts.sum() if exp_counts.sum() else np.zeros_like(exp_counts)
+act_props = act_counts / act_counts.sum() if act_counts.sum() else np.zeros_like(act_counts)
+
+
+exp_props = np.where(exp_props == 0, 1e-6, exp_props)
+act_props = np.where(act_props == 0, 1e-6, act_props)
+
+
+psi_vals = (act_props - exp_props) * np.log(act_props / exp_props)
+return float(np.sum(psi_vals))
+
+
 
 
 def tvd(p: np.ndarray, q: np.ndarray) -> float:
-    p = p / (p.sum() if p.sum() else 1)
-    q = q / (q.sum() if q.sum() else 1)
-    return 0.5 * float(np.abs(p - q).sum())
+p = p / (p.sum() if p.sum() else 1)
+q = q / (q.sum() if q.sum() else 1)
+return 0.5 * float(np.abs(p - q).sum())
+
+
 
 
 def ks_stat(x: np.ndarray, y: np.ndarray) -> float:
-    x = x[~np.isnan(x)]
-    y = y[~np.isnan(y)]
-    if x.size == 0 or y.size == 0:
-        return np.nan
-    return float(stats.ks_2samp(x, y, mode="auto").statistic)
+if stats is None:
+return np.nan
+x = x[~np.isnan(x)]
+y = y[~np.isnan(y)]
+if x.size == 0 or y.size == 0:
+return np.nan
+return float(stats.ks_2samp(x, y, mode="auto").statistic)
+
+
 
 
 def jensen_shannon(p: np.ndarray, q: np.ndarray) -> float:
-    p = p / (p.sum() if p.sum() else 1)
-    q = q / (q.sum() if q.sum() else 1)
-    m = 0.5 * (p + q)
+p = p / (p.sum() if p.sum() else 1)
+q = q / (q.sum() if q.sum() else 1)
+m = 0.5 * (p + q)
 
-    def _kl(a, b):
-        a = np.where(a == 0, 1e-12, a)
-        b = np.where(b == 0, 1e-12, b)
-        return np.sum(a * np.log(a / b))
 
-    js_div = 0.5 * _kl(p, m) + 0.5 * _kl(q, m)
-    return float(np.sqrt(js_div))
+def _kl(a, b):
+a = np.where(a == 0, 1e-12, a)
+b = np.where(b == 0, 1e-12, b)
+return np.sum(a * np.log(a / b))
+
+
+js_div = 0.5 * _kl(p, m) + 0.5 * _kl(q, m)
+return float(np.sqrt(js_div))
+
+
 
 
 def categorical_dist(series: pd.Series) -> Tuple[np.ndarray, List[str]]:
-    counts = series.value_counts(dropna=False)
-    return counts.values.astype(float), counts.index.astype(str).tolist()
+counts = series.value_counts(dropna=False)
+return counts.values.astype(float), counts.index.astype(str).tolist()
 
 
 # =============================
