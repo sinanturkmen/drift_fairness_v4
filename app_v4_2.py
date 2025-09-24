@@ -6,6 +6,12 @@ import pickle
 import textwrap
 import warnings
 from typing import List, Tuple
+# Add these to the top with your other sklearn imports
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import accuracy_score
 
 import numpy as np
 import pandas as pd
